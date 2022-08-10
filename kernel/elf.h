@@ -20,7 +20,7 @@ struct elfhdr {
   ushort shnum;
   ushort shstrndx;
 };
-
+//每个proghdr都描述了应用程序中必须加载到内存中的一部分,一个程序只有一个
 // Program section header
 struct proghdr {
   uint32 type;

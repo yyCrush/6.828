@@ -22,6 +22,11 @@ static void freeproc(struct proc *p);
 extern char trampoline[]; // trampoline.S
 
 // initialize the proc table at boot time.
+
+//procinit (kernel/proc:26)是从main调用的，它为每个进程分配一个内核堆栈。
+//它将每个堆栈映射到KSTACK生成的虚拟地址，从而为无效的堆栈保护页面留下空间。
+//kvmmap将映射pte添加到内核页表，tokvminithart调用将内核页表重新加载到satp中，
+//以便硬件知道新的pte。
 void
 procinit(void)
 {
@@ -96,7 +101,7 @@ allocproc(void)
 
   for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
-    if(p->state == UNUSED) {
+    if(p->state == UNUSED) {//找到未被使用的结构体,其中在xv6的设置中，进程表中的进程数有64个
       goto found;
     } else {
       release(&p->lock);
@@ -105,7 +110,7 @@ allocproc(void)
   return 0;
 
 found:
-  p->pid = allocpid();
+  p->pid = allocpid();//(将它的state设置成EMBRYO，老代码的)并给它分配一个pid
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -212,11 +217,11 @@ void
 userinit(void)
 {
   struct proc *p;
-
+  //allocproc的工作是在进程表中分配一个proc，并初始化进程的状态，然后分配内核堆栈内存，初始化内核栈。为其内核线程的运行做准备。
   p = allocproc();
   initproc = p;
   
-  // allocate one user page and copy init's instructions
+  // allocate one user page and copy init's instructions 
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
@@ -243,9 +248,11 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
+    //uvmalloc通过kalloc分配物理内存，并通过mapping将pte添加到用户页表中。
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    //uvmdealloc调用uvmunmap它使用walk来找到pte，并使用kfree来释放它们引用的物理内存。
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }

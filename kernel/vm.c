@@ -16,15 +16,16 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 extern char trampoline[]; // trampoline.S
 
 /*
- * create a direct-map page table for the kernel.
+ * create a direct-map page table for the kernel.Kvminit首先分配一页物理内存来保存根页-表页
  */
 void
 kvminit()
 {
-  kernel_pagetable = (pagetable_t) kalloc();
-  memset(kernel_pagetable, 0, PGSIZE);
+  kernel_pagetable = (pagetable_t) kalloc();//Kvminit首先分配一页物理内存来保存根页-表页
+  memset(kernel_pagetable, 0, PGSIZE);//pgsize=4096
 
   // uart registers
+  //调用kvmmap来安装内核需要的转换,转换包括内核的指令和数据，物理内存到PHYSTOP，以及实际上是设备的内存范围。
   kvmmap(UART0, UART0, PGSIZE, PTE_R | PTE_W);
 
   // virtio mmio disk interface
@@ -49,10 +50,14 @@ kvminit()
 
 // Switch h/w page table register to the kernel's page table,
 // and enable paging.
+//Main调用kvminithart (kernel/vm.c:53)创建内核页表。
+//它将根页-表页的物理地址写入寄存器satp。
+//在这之后，CPU将使用内核页表转换地址。
+//由于内核使用标识映射，因此下一条指令的虚拟地址将映射到正确的物理内存地址。
 void
 kvminithart()
 {
-  w_satp(MAKE_SATP(kernel_pagetable));
+  w_satp(MAKE_SATP(kernel_pagetable));//根页-表页的物理地址写入寄存器satp
   sfence_vma();
 }
 
@@ -68,6 +73,9 @@ kvminithart()
 //   21..29 -- 9 bits of level-1 index.
 //   12..20 -- 9 bits of level-0 index.
 //    0..11 -- 12 bits of byte offset within the page.
+//此函数主要查找虚拟地址的PTE和mappages，为新的mappings安装PTEs
+//Walk每次向3级页表下移9位。它使用每一层的9位虚拟地址来查找下一层页表或最后一页的PTE
+
 pte_t *
 walk(pagetable_t pagetable, uint64 va, int alloc)
 {
@@ -75,17 +83,17 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
     panic("walk");
 
   for(int level = 2; level > 0; level--) {
-    pte_t *pte = &pagetable[PX(level, va)];
+    pte_t *pte = &pagetable[PX(level, va)];//它使用每一层的9位虚拟地址来查找下一层页表或最后一页的PTE
     if(*pte & PTE_V) {
-      pagetable = (pagetable_t)PTE2PA(*pte);
-    } else {
-      if(!alloc || (pagetable = (pde_t*)kalloc()) == 0)
+      pagetable = (pagetable_t)PTE2PA(*pte);//当遍历页表的下一层时，它从PTE (kernel/vm.c:80)中提取下一层页表的(物理)地址，
+    } else {//如果PTE无效，那么所需的页面还没有被分配
+      if(!alloc || (pagetable = (pde_t*)kalloc()) == 0)//如果设置了alloc参数，
         return 0;
-      memset(pagetable, 0, PGSIZE);
+      memset(pagetable, 0, PGSIZE);//walk会分配一个新的页表页，并将其物理地址放在PTE中，
       *pte = PA2PTE(pagetable) | PTE_V;
     }
   }
-  return &pagetable[PX(0, va)];
+  return &pagetable[PX(0, va)];//它会返回树中最底层PTE的地址
 }
 
 // Look up a virtual address, return the physical address,
@@ -145,21 +153,28 @@ kvmpa(uint64 va)
 // physical addresses starting at pa. va and size might not
 // be page-aligned. Returns 0 on success, -1 if walk() couldn't
 // allocate a needed page-table page.
+//它将一系列虚拟地址到相应的物理地址范围的映射安装到一个页表中。
+//它以页面间隔分别为范围内的每个虚拟地址执行此操作。对于要映射的每个虚拟地址，
+//映射调用walk查找该地址的PTE地址。
+//然后初始化PTE以保存相关的物理页号、所需的权限(PTE_W、PTE_X和/orPTE_R)和PTE_V，
+//以标记PTE为有效的(kernel/vm.c:161)。
 int
 mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
 {
   uint64 a, last;
   pte_t *pte;
-
+  //通常用于获取页面对齐的地址
+  //PGROUNDUP(620) ==> ((620 + (1024 -1)) & ~(1023)) ==> 1024
+  //PGROUNDDOWN(2400) ==> (2400 & ~(1023)) ==> 2048
   a = PGROUNDDOWN(va);
   last = PGROUNDDOWN(va + size - 1);
   for(;;){
-    if((pte = walk(pagetable, a, 1)) == 0)
+    if((pte = walk(pagetable, a, 1)) == 0)//调用walk查找该地址的PTE地址
       return -1;
     if(*pte & PTE_V)
       panic("remap");
-    *pte = PA2PTE(pa) | perm | PTE_V;
     if(a == last)
+    *pte = PA2PTE(pa) | perm | PTE_V;
       break;
     a += PGSIZE;
     pa += PGSIZE;
@@ -351,6 +366,7 @@ uvmclear(pagetable_t pagetable, uint64 va)
 // Copy from kernel to user.
 // Copy len bytes from src to virtual address dstva in a given page table.
 // Return 0 on success, -1 on error.
+//
 int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
@@ -439,4 +455,26 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+void vmprint(pagetable_t pagetable)
+{
+	printf("page table %p\n", pagetable);
+	for(int i=0; i<512; i++){
+		pte_t *pte = &pagetable[i];
+		if(*pte & PTE_V){
+			pagetable_t pt1 = (pagetable_t)PTE2PA(*pte);
+			printf("..%d: pte %p pa %p\n", i, *pte, pt1);
+			for(int j=0; j<512; j++){
+				pte_t *pte1 = &pt1[j];
+				if(*pte1 & PTE_V){
+					pagetable_t pt0 = (pagetable_t)PTE2PA(*pte1);
+					printf(".. ..%d: pte %p pa %p\n", j, *pte1, pt0);
+					for(int k=0; k<512; k++)
+						if(pt0[k] & PTE_V)
+							printf(".. .. ..%d: pte %p pa %p\n", k, pt0[k], PTE2PA(pt0[k]));
+				}
+			}
+		}
+	}
 }

@@ -14,6 +14,10 @@ void freerange(void *pa_start, void *pa_end);
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
+//每个空闲页面的list元素都是一个struct run
+//使用了空闲内存的前部分作为指针域来指向下一页空闲内存，物理内存管理是以页（4K）为单位进行分配的。
+//也就是说物理内存空间上空闲的每一页，都有一个指针域（虚拟地址）指向下一个空闲页，
+//最后一个空闲页为NULL
 struct run {
   struct run *next;
 };
@@ -34,7 +38,7 @@ void
 freerange(void *pa_start, void *pa_end)
 {
   char *p;
-  p = (char*)PGROUNDUP((uint64)pa_start);
+  p = (char*)PGROUNDUP((uint64)pa_start);//确保它只释放对齐的物理地址
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
     kfree(p);
 }
@@ -52,7 +56,7 @@ kfree(void *pa)
     panic("kfree");
 
   // Fill with junk to catch dangling refs.
-  memset(pa, 1, PGSIZE);
+  memset(pa, 1, PGSIZE);//首先将内存中被释放的每个字节设置为值1
 
   r = (struct run*)pa;
 
@@ -78,5 +82,6 @@ kalloc(void)
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
+  //printf("r= ----%x",r);
   return (void*)r;
 }

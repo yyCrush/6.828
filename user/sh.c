@@ -75,6 +75,7 @@ runcmd(struct cmd *cmd)
     ecmd = (struct execcmd*)cmd;
     if(ecmd->argv[0] == 0)
       exit(1);
+    //对于“echo hello”，它会调用exec。如果exec成功，那么子进程将从echo而不是runcmd执行指令。
     exec(ecmd->argv[0], ecmd->argv);
     fprintf(2, "exec %s failed\n", ecmd->argv[0]);
     break;
@@ -99,18 +100,20 @@ runcmd(struct cmd *cmd)
 
   case PIPE:
     pcmd = (struct pipecmd*)cmd;
+    //子进程创建一个管道来连接管道的左端和右端。
+    //然后它为管道的左端调用fork和runcmd，为管道的右端调用fork和runcmd，并等待两者都完成。
     if(pipe(p) < 0)
       panic("pipe");
     if(fork1() == 0){
-      close(1);
-      dup(p[1]);
+      close(1);//关闭1fd
+      dup(p[1]);//复制管道write到标准输出
       close(p[0]);
       close(p[1]);
       runcmd(pcmd->left);
     }
     if(fork1() == 0){
-      close(0);
-      dup(p[0]);
+      close(0);//关闭标准输入
+      dup(p[0]);//复制管道read到标准输入
       close(p[0]);
       close(p[1]);
       runcmd(pcmd->right);
@@ -157,6 +160,8 @@ main(void)
 
   // Read and run input commands.
   while(getcmd(buf, sizeof(buf)) >= 0){
+    //CD必须更改shell本身的当前工作目录。也就是改变父进程的
+    //如果当成常规命令，将不会执行if，而是在fork1的子进程执行CD
     if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
       // Chdir must be called by the parent, not the child.
       buf[strlen(buf)-1] = 0;  // chop \n
@@ -164,6 +169,7 @@ main(void)
         fprintf(2, "cannot cd %s\n", buf+3);
       continue;
     }
+    //fork创建shell进程的副本
     if(fork1() == 0)
       runcmd(parsecmd(buf));
     wait(0);
